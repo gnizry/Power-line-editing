@@ -109,14 +109,19 @@ async function login() {
     $("pass").value = "";
     $("loginCard").classList.add("hide");
     $("outCard").classList.remove("hide");
-    if (CFG.map) { await loadLayers(); }          // מצב פשוט: מפה קבועה – ישר לכפתורים
+    if (CFG.map) { try { await loadLayers(); } catch (e) { say(e.message, "err"); } }  // מצב פשוט: מפה קבועה – ישר לכפתורים
     else {
       $("setupCard").classList.remove("hide");
       const saved = LS.get("itemId");
       if (saved) { $("mapQ").value = saved; await findMaps(); }
     }
   } catch (e) { alert("ההתחברות נכשלה: " + e.message); }
-  busy(false);
+  busy(false); syncButtons();
+}
+function syncButtons() {
+  if ($("actionCard").classList.contains("hide")) return;
+  const on = $("state").classList.contains("on");
+  $("openBtn").disabled = on; $("closeBtn").disabled = !on;
 }
 
 // ---------- חיפוש מפה ----------
@@ -216,8 +221,7 @@ async function setEditing(enable) {
     await showState();
     say(enable ? "העריכה נפתחה. אפשר לרענן את המפה." : "העריכה נסגרה.", "ok");
   } catch (e) { say("שגיאה: " + e.message, "err"); }
-  busy(false);
-  if ($("state").className) { /* כפתורים לפי מצב */ const on = $("state").classList.contains("on"); $("openBtn").disabled = on; $("closeBtn").disabled = !on; }
+  busy(false); syncButtons();
 }
 
 function logout() { S.token = ""; location.reload(); }
