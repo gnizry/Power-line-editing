@@ -75,9 +75,9 @@ const LS = { get:(k,d="")=>{try{return localStorage.getItem(k)??d}catch{return d
 // ---- הגדרות קבועות (אפשר גם דרך הקישור: ?map=ITEMID&layer=שם-או-מזהה&title=כותרת) ----
 const P = new URLSearchParams(location.search);
 const CFG = {
-  map:   P.get("map")   || "",   // מזהה (Item ID) של המפה – אפשר להדביק כאן קבוע
-  layer: P.get("layer") || "",   // שם השכבה (חלק מהשם מספיק) או מזהה השכבה במפה
-  title: P.get("title") || "",
+  map:   P.get("map")   || "1235fde6ea0c4d8aa908b0366629cdc3",   // מזהה (Item ID) של המפה – אפשר להדביק כאן קבוע
+  layer: P.get("layer") || "קווי חשמל",   // שם השכבה (חלק מהשם מספיק) או מזהה השכבה במפה
+  title: P.get("title") || "עריכת קווי חשמל",
   portal:P.get("portal")|| ""
 };
 let S = { portal:"", token:"", user:"", itemId:"", layerId:"" };   // token נשמר בזיכרון בלבד
