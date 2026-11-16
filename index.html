@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>פתיחת/סגירת עריכה בשכבה</title>
+<style>
+  :root{--g:#2e7d32;--r:#c62828;--b:#1565c0;--bg:#f4f6f4;--t:#1b1f1b;--m:#667}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--t);
+       padding:max(16px,env(safe-area-inset-top)) 16px 32px}
+  main{max-width:480px;margin:0 auto}
+  h1{font-size:1.25rem;margin:8px 0 16px}
+  .card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 1px 4px #0002}
+  label{display:block;font-size:.85rem;color:var(--m);margin:10px 0 4px}
+  input,select{width:100%;font-size:1rem;padding:12px;border:1px solid #bbb;border-radius:10px;background:#fff}
+  input[dir=ltr]{text-align:left}
+  button{width:100%;font-size:1.1rem;font-weight:600;padding:16px;border:0;border-radius:12px;color:#fff;margin-top:12px;cursor:pointer}
+  button:disabled{opacity:.45}
+  .open{background:var(--g)} .close{background:var(--r)} .main{background:var(--b)} .ghost{background:#e4e8e4;color:var(--t);font-size:.95rem;padding:12px}
+  #state{font-size:1.15rem;font-weight:700;text-align:center;padding:14px;border-radius:12px;margin-bottom:6px}
+  .on{background:#e5f4e6;color:var(--g)} .off{background:#fdeaea;color:var(--r)} .unk{background:#eee;color:var(--m)}
+  #msg{min-height:1.4em;text-align:center;font-size:.95rem;margin-top:10px}
+  .err{color:var(--r)} .ok{color:var(--g)}
+  #timer{text-align:center;color:var(--m);font-size:.9rem;margin-top:6px}
+  .hide{display:none}
+  small{color:var(--m)}
+</style>
+</head>
+<body>
+<main>
+  <h1>🔌 עריכת שכבת קווי חשמל</h1>
+
+  <!-- שלב 1: התחברות -->
+  <section class="card" id="loginCard">
+    <label for="portal">כתובת הארגון (Portal)</label>
+    <input id="portal" dir="ltr" value="https://www.arcgis.com" autocapitalize="off" autocorrect="off">
+    <label for="user">שם משתמש</label>
+    <input id="user" dir="ltr" autocomplete="username" autocapitalize="off" autocorrect="off">
+    <label for="pass">סיסמה</label>
+    <input id="pass" type="password" dir="ltr" autocomplete="current-password">
+    <button class="main" id="loginBtn">התחבר</button>
+  </section>
+
+  <!-- שלב 2: בחירת מפה ושכבה -->
+  <section class="card hide" id="setupCard">
+    <label for="mapQ">מפה (שם לחיפוש או מזהה Item ID)</label>
+    <input id="mapQ" placeholder="למשל: סדרן עבודה" autocapitalize="off">
+    <button class="ghost" id="findBtn">חפש מפה</button>
+    <select id="mapSel" class="hide" style="margin-top:10px"></select>
+    <label for="layerSel">שכבה</label>
+    <select id="layerSel"></select>
+    <button class="ghost" id="loadBtn">טען מצב נוכחי</button>
+  </section>
+
+  <!-- שלב 3: הכפתורים -->
+  <section class="card hide" id="actionCard">
+    <div id="state" class="unk">—</div>
+    <div id="timer"></div>
+    <button class="open"  id="openBtn">✏️ אפשר עריכת שכבה</button>
+    <button class="close" id="closeBtn">🔒 סגור עריכה</button>
+    <div id="msg"></div>
+  </section>
+
+  <div class="card hide" id="outCard"><button class="ghost" id="logoutBtn">התנתק</button></div>
+  <p style="text-align:center"><small>הסיסמה נשלחת רק לשרתי ArcGIS ואינה נשמרת.</small></p>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const LS = { get:(k,d="")=>{try{return localStorage.getItem(k)??d}catch{return d}}, set:(k,v)=>{try{localStorage.setItem(k,v)}catch{}} };
+
+// ---- הגדרות קבועות (אפשר גם דרך הקישור: ?map=ITEMID&layer=שם-או-מזהה&title=כותרת) ----
+const P = new URLSearchParams(location.search);
+const CFG = {
+  map:   P.get("map")   || "",   // מזהה (Item ID) של המפה – אפשר להדביק כאן קבוע
+  layer: P.get("layer") || "",   // שם השכבה (חלק מהשם מספיק) או מזהה השכבה במפה
+  title: P.get("title") || "",
+  portal:P.get("portal")|| ""
+};
+let S = { portal:"", token:"", user:"", itemId:"", layerId:"" };   // token נשמר בזיכרון בלבד
+const READONLY_FLAGS = /Create|Update|Delete|Editing/i;
+
+// ---------- עזרי רשת ----------
+async function api(url, params = {}, post = false) {
+  const body = new URLSearchParams({ f:"json", ...params });
+  if (S.token) body.set("token", S.token);
+  const r = await fetch(post ? url : url + "?" + body, post ? { method:"POST", body } : {});
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message + (j.error.details?.length ? " – " + j.error.details.join(" ") : ""));
+  return j;
+}
+const say = (t, cls="") => { $("msg").textContent = t; $("msg").className = cls; };
+const busy = b => document.querySelectorAll("button").forEach(x => x.disabled = b);
+
+// ---------- התחברות ----------
+async function login() {
+  const portal = $("portal").value.trim().replace(/\/+$/,"");
+  const user = $("user").value.trim(), pass = $("pass").value;
+  if (!user || !pass) return alert("נא להזין שם משתמש וסיסמה");
+  busy(true);
+  try {
+    const j = await api(portal + "/sharing/rest/generateToken",
+      { username:user, password:pass, client:"referer", referer:location.origin || "https://localhost", expiration:60 }, true);
+    S = { ...S, portal, token:j.token, user };
+    LS.set("portal", portal); LS.set("user", user);
+    $("pass").value = "";
+    $("loginCard").classList.add("hide");
+    $("outCard").classList.remove("hide");
+    if (CFG.map) { await loadLayers(); }          // מצב פשוט: מפה קבועה – ישר לכפתורים
+    else {
+      $("setupCard").classList.remove("hide");
+      const saved = LS.get("itemId");
+      if (saved) { $("mapQ").value = saved; await findMaps(); }
+    }
+  } catch (e) { alert("ההתחברות נכשלה: " + e.message); }
+  busy(false);
+}
+
+// ---------- חיפוש מפה ----------
+async function findMaps() {
+  const q = $("mapQ").value.trim();
+  if (!q) return;
+  busy(true);
+  try {
+    let items = [];
+    if (/^[0-9a-f]{32}$/i.test(q)) {
+      items = [await api(`${S.portal}/sharing/rest/content/items/${q}`)];
+    } else {
+      const r = await api(`${S.portal}/sharing/rest/search`,
+        { q:`title:"${q.replace(/"/g,"")}" AND type:"Web Map"`, num:20, sortField:"modified", sortOrder:"desc" });
+      items = r.results;
+    }
+    if (!items.length) { say("לא נמצאה מפה", "err"); busy(false); return; }
+    const sel = $("mapSel");
+    sel.innerHTML = items.map(i => `<option value="${i.id}">${i.title} (${i.owner})</option>`).join("");
+    sel.classList.toggle("hide", items.length === 1 && /^[0-9a-f]{32}$/i.test(q));
+    const saved = LS.get("itemId"); if (items.some(i => i.id === saved)) sel.value = saved;
+    await loadLayers();
+  } catch (e) { say(e.message, "err"); }
+  busy(false);
+}
+
+// ---------- שכבות במפה ----------
+function flatten(layers, out = [], path = "") {
+  for (const l of layers || []) {
+    if (l.layers) flatten(l.layers, out, path + (l.title || "") + " › ");
+    else if (l.layerType === "ArcGISFeatureLayer" || l.url) out.push({ layer:l, label:path + (l.title || l.id) });
+  }
+  return out;
+}
+async function getMap() {
+  const itemId = CFG.map || $("mapSel").value || LS.get("itemId");
+  const info = await api(`${S.portal}/sharing/rest/content/items/${itemId}`);
+  const data = await api(`${S.portal}/sharing/rest/content/items/${itemId}/data`);
+  return { itemId, info, data };
+}
+async function loadLayers() {
+  const { itemId, data } = await getMap();
+  S.itemId = itemId; if (!CFG.map) LS.set("itemId", itemId);
+  const list = flatten(data.operationalLayers);
+  const sel = $("layerSel");
+  sel.innerHTML = list.map(x => `<option value="${x.layer.id}">${x.label}</option>`).join("");
+  const saved = CFG.layer || LS.get("layerId");
+  const guess = list.find(x => x.layer.id === saved) || list.find(x => saved && x.label.includes(saved)) || list.find(x => /חשמל/.test(x.label));
+  if (guess) sel.value = guess.layer.id;
+  await showState();
+}
+
+// ---------- מצב עריכה ----------
+function isEditingOn(layer) {
+  const c = layer.layerDefinition?.capabilities ?? layer.capabilities;
+  return c == null ? true : READONLY_FLAGS.test(c);
+}
+function findLayer(data, id) {
+  const stack = [...(data.operationalLayers || [])];
+  while (stack.length) { const l = stack.shift(); if (l.id === id) return l; if (l.layers) stack.push(...l.layers); }
+}
+async function showState() {
+  S.layerId = $("layerSel").value; if (!CFG.map) LS.set("layerId", S.layerId);
+  const { data } = await getMap();
+  const layer = findLayer(data, S.layerId);
+  if (!layer) return say("השכבה לא נמצאה במפה", "err");
+  const on = isEditingOn(layer);
+  const st = $("state");
+  st.textContent = on ? "העריכה פתוחה ✅" : "העריכה סגורה 🔒";
+  st.className = on ? "on" : "off";
+  $("actionCard").classList.remove("hide");
+  $("openBtn").disabled = on; $("closeBtn").disabled = !on;
+  const t = +LS.get("openedAt", 0);
+  $("timer").textContent = on && t ? "נפתחה לפני " + Math.round((Date.now() - t) / 60000) + " דקות" : "";
+  say("");
+}
+
+async function setEditing(enable) {
+  busy(true); say("מעדכן…");
+  try {
+    const { itemId, info, data } = await getMap();
+    const layer = findLayer(data, S.layerId);
+    if (!layer) throw new Error("השכבה לא נמצאה במפה");
+    layer.layerDefinition = layer.layerDefinition || {};
+    if (enable) {
+      // הסרת ההגבלה – העריכה חוזרת להיות לפי הגדרות השכבה עצמה (Enable editing ברמת הפריט)
+      delete layer.layerDefinition.capabilities;
+      delete layer.capabilities;
+      LS.set("openedAt", Date.now());
+    } else {
+      layer.layerDefinition.capabilities = "Query";
+      LS.set("openedAt", 0);
+    }
+    const folder = info.ownerFolder ? "/" + info.ownerFolder : "";
+    await api(`${S.portal}/sharing/rest/content/users/${info.owner}${folder}/items/${itemId}/update`,
+              { text: JSON.stringify(data) }, true);
+    await showState();
+    say(enable ? "העריכה נפתחה. אפשר לרענן את המפה." : "העריכה נסגרה.", "ok");
+  } catch (e) { say("שגיאה: " + e.message, "err"); }
+  busy(false);
+  if ($("state").className) { /* כפתורים לפי מצב */ const on = $("state").classList.contains("on"); $("openBtn").disabled = on; $("closeBtn").disabled = !on; }
+}
+
+function logout() { S.token = ""; location.reload(); }
+
+$("portal").value = CFG.portal || LS.get("portal", "https://www.arcgis.com");
+if (CFG.title) { document.querySelector("h1").textContent = "🔌 " + CFG.title; document.title = CFG.title; }
+if (CFG.map) $("portal").closest("section").querySelector("label").classList.add("hide"), $("portal").classList.add("hide");
+$("user").value = LS.get("user");
+$("loginBtn").onclick = login;
+$("pass").addEventListener("keydown", e => e.key === "Enter" && login());
+$("findBtn").onclick = findMaps;
+$("mapSel").onchange = () => loadLayers().catch(e => say(e.message, "err"));
+$("layerSel").onchange = () => showState().catch(e => say(e.message, "err"));
+$("loadBtn").onclick = () => showState().catch(e => say(e.message, "err"));
+$("openBtn").onclick = () => setEditing(true);
+$("closeBtn").onclick = () => setEditing(false);
+$("logoutBtn").onclick = logout;
+</script>
+</body>
+</html>
